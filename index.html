@@ -888,18 +888,35 @@ const CS_TRIAL={
 };
 const CS_TRIAL_TOTAL=[776,609,643,684,548,625,978,978,841,625]; // includes trials with no source tag
 const CS_PAID=[280,216,216,238,174,175,185,154,171,88];
+// Booked: Jul–Oct from the onboarding sheet (Sep merged); Jan–Jun dummy. Attended: dummy share of booked.
+const CS_BOOKED_JUL_OCT={'Ad Affiliates':[74,58,6,1],'Ad Non-Affiliates':[184,145,83,53],'Affiliate':[60,38,26,11],'AI':[8,18,8,2],
+ 'Alternative Pages':[2,1,0,1],'Biggerpockets':[1,0,0,0],'No Coupon Code':[12,7,7,9],'Non Affiliate':[0,1,0,0],
+ 'Organic':[87,97,48,39],'Others':[6,4,4,12],'Our Offered Coupon':[3,3,7,15],'Referral':[8,7,6,4],'Social Media':[35,29,20,13]};
+const CS_BOOK_RATE={'Ad Affiliates':.5,'Ad Non-Affiliates':.47,'Affiliate':.5,'AI':.5,'Alternative Pages':.4,'Biggerpockets':.4,'No Coupon Code':.35,
+ 'Non Affiliate':.2,'Organic':.4,'Others':.6,'Our Offered Coupon':.8,'Referral':.4,'Social Media':.45};
+const CS_BOOKED={},CS_ATTENDED={};
+{const r=rng(3),r2=rng(8);for(const s in CS_TRIAL){
+  CS_BOOKED[s]=CS_TRIAL[s].map((v,i)=>Math.min(v,i<6?Math.round(v*CS_BOOK_RATE[s]*(.85+r()*.3)):CS_BOOKED_JUL_OCT[s][i-6]));
+  CS_ATTENDED[s]=CS_BOOKED[s].map(v=>Math.round(v*(.6+r2()*.2)))}}
 const CS_RATE={'Ad Non-Affiliates':.2,'Ad Affiliates':.22,'Organic':.3,'Affiliate':.32,'Social Media':.18,'Others':.25,'AI':.3,'No Coupon Code':.28,
  'Referral':.38,'Our Offered Coupon':.35,'Alternative Pages':.3,'Biggerpockets':.3,'Non Affiliate':.25};
 const CS_ATTR=[{id:'ours',label:'Our Findings'},{id:'stripe',label:'Stripe metadata'},{id:'self',label:'Self-reported source'}];
-const CS_ROWS=[{k:'trial',t:'Trial'},{k:'paid',t:'Paid'},{k:'conv',t:'Trial to Paid %'}];
+const CS_ROWS=[{k:'trial',t:'Trial'},{k:'booked',t:'Booked'},{k:'attended',t:'Attended'},{k:'paid',t:'Paid'},{k:'conv',t:'Trial to Paid %'}];
 const cs={mode:'count',heat:true,attr:'ours',gran:'month',from:0,to:9,custom:false,open:new Set(),show:new Set(['trial','paid','conv'])};
 
-function csTrials(attr){
-  const t={};for(const k in CS_TRIAL)t[k]=CS_TRIAL[k].slice();
+function csShift(src,attr){
+  const t={};for(const k in src)t[k]=src[k].slice();
   const mv=(a,b,f)=>t[a].forEach((v,i)=>{const m=Math.round(v*f);t[a][i]-=m;t[b][i]+=m});
   if(attr==='stripe'){mv('Social Media','Organic',.4);mv('AI','Organic',.5);mv('Alternative Pages','Organic',.6);mv('Biggerpockets','Others',.5)}
   if(attr==='self'){mv('Organic','Social Media',.15);mv('Organic','AI',.1);mv('Others','Referral',.3)}
   return t;
+}
+const csTrials=attr=>csShift(CS_TRIAL,attr);
+// Booked/attended follow the same attribution, capped so attended ≤ booked ≤ trials
+function csFunnel(T,attr){
+  const Bk=csShift(CS_BOOKED,attr),At=csShift(CS_ATTENDED,attr);
+  for(const s in T)T[s].forEach((v,i)=>{Bk[s][i]=Math.min(Bk[s][i],v);At[s][i]=Math.min(At[s][i],Bk[s][i])});
+  return{Bk,At};
 }
 function csPaid(trials){
   const r=rng(77),src=Object.keys(trials),out={};src.forEach(s=>out[s]=[]);
@@ -924,7 +941,7 @@ function csHeat(cur,prev){
   return cur>prev?{bg:`rgba(16,185,129,${a.toFixed(2)})`,cls:'hu'}:{bg:`rgba(239,68,68,${(a*.62).toFixed(2)})`,cls:'hd'};
 }
 function renderCS(){
-  const T=csTrials(cs.attr),P=csPaid(T),src=Object.keys(T),cols=csCols();
+  const T=csTrials(cs.attr),P=csPaid(T),{Bk,At}=csFunnel(T,cs.attr),src=Object.keys(T),cols=csCols(),pctMode=cs.mode==='pct';
   const sum=(arr,m)=>m.reduce((a,i)=>a+arr[i],0),all=cols.flatMap(c=>c.m);
   const totT=c=>sum(CS_TRIAL_TOTAL,c),totP=c=>src.reduce((a,s)=>a+sum(P[s],c),0);
   const f2=v=>isFinite(v)?v.toFixed(2)+'%':'—';
@@ -934,14 +951,17 @@ function renderCS(){
     paid:{parent:c=>totP(c),sub:(s,c)=>cs.mode==='pct'?sum(P[s],c)/(totP(c)||NaN)*100:sum(P[s],c)},
     conv:{parent:c=>totP(c)/(totT(c)||NaN)*100,sub:(s,c)=>sum(P[s],c)/(sum(T[s],c)||NaN)*100}
   };
-  const isPct=(k,sub)=>k==='conv'||(sub&&cs.mode==='pct');
+  // Booked / Attended: counts, or % of trials in % mode
+  [['booked',Bk],['attended',At]].forEach(([k,D])=>{const tot=c=>src.reduce((a,s)=>a+sum(D[s],c),0);
+    build[k]={parent:c=>pctMode?tot(c)/(totT(c)||NaN)*100:tot(c),sub:(s,c)=>pctMode?sum(D[s],c)/(sum(T[s],c)||NaN)*100:sum(D[s],c)}});
+  const isPct=(k,sub)=>k==='conv'||(pctMode&&(sub||k==='booked'||k==='attended'));
   const cells=(vals,pctFmt,parent)=>vals.map((v,i)=>{const h=csHeat(v,i?vals[i-1]:null);
     return `<td class="${parent?h.cls:''}" style="${h.bg?`background:${h.bg}`:''}">${pctFmt?f2(v):fmt(v)}</td>`}).join('');
   $('#csHead').innerHTML='<tr><th>Metric</th>'+cols.map(c=>`<th>${c.label}</th>`).join('')+'<th>Total</th></tr>';
   let html='';
   CS_ROWS.filter(r=>cs.show.has(r.k)).forEach(r=>{
     const b=build[r.k],open=cs.open.has(r.k),pv=cols.map(c=>b.parent(c.m)),pt=b.parent(all);
-    html+=`<tr class="parent ${open?'open':''}" data-k="${r.k}"><td class="m"><span class="chv">${svg('chevR')}</span>${r.t}</td>${cells(pv,isPct(r.k,false),true)}<td class="tot">${isPct(r.k,false)?f2(pt):fmt(pt)}</td></tr>`;
+    html+=`<tr class="parent ${open?'open':''}" data-k="${r.k}"><td class="m"><span class="chv">${svg('chevR')}</span>${r.t}${pctMode&&(r.k==='booked'||r.k==='attended')?' %':''}</td>${cells(pv,isPct(r.k,false),true)}<td class="tot">${isPct(r.k,false)?f2(pt):fmt(pt)}</td></tr>`;
     if(open)src.forEach(s=>{const v=cols.map(c=>b.sub(s,c.m)),t=b.sub(s,all);
       html+=`<tr class="sub"><td>${s}</td>${cells(v,isPct(r.k,true),false)}<td class="tot">${isPct(r.k,true)?f2(t):fmt(t)}</td></tr>`});
   });
@@ -956,7 +976,7 @@ function renderCS(){
 $('#csBody').addEventListener('click',e=>{const tr=e.target.closest('tr.parent');if(!tr)return;const k=tr.dataset.k;cs.open.has(k)?cs.open.delete(k):cs.open.add(k);renderCS()});
 seg('#csMode',v=>{cs.mode=v;renderCS()});
 seg('#csHeat',v=>{cs.heat=v==='on';renderCS()});
-$('#csRows').innerHTML='<div class="mh">Show rows</div>'+CS_ROWS.map(r=>`<label><input type="checkbox" data-k="${r.k}" checked>${r.t}</label>`).join('')+
+$('#csRows').innerHTML='<div class="mh">Show rows</div>'+CS_ROWS.map(r=>`<label><input type="checkbox" data-k="${r.k}" ${cs.show.has(r.k)?'checked':''}>${r.t}</label>`).join('')+
   '<div class="row-acts"><button data-act="expand">Expand all</button><button data-act="collapse">Collapse all</button></div>';
 $('#csRows').addEventListener('change',e=>{const k=e.target.dataset.k;e.target.checked?cs.show.add(k):cs.show.delete(k);renderCS()});
 $('#csRows').addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(!b)return;cs.open=b.dataset.act==='expand'?new Set(CS_ROWS.map(r=>r.k)):new Set();renderCS()});
